@@ -15,7 +15,8 @@ import sqlite3
 import re
 import urllib.parse
 from deep_translator import GoogleTranslator
-
+import queue
+import yt_dlp
 # Load environment variables
 load_dotenv()
 
@@ -57,6 +58,44 @@ def init_db():
     conn.close()
 
 init_db()
+
+# Khởi tạo hàng đợi nhạc
+music_queues = {}  # {guild_id: queue.Queue()}
+
+# Cấu hình yt-dlp
+ytdl_format_options = {
+    'format': 'bestaudio/best',
+    'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
+    'restrictfilenames': True,
+    'noplaylist': True,
+    'nocheckcertificate': True,
+    'ignoreerrors': False,
+    'logtostderr': False,
+    'quiet': True,
+    'no_warnings': True,
+    'default_search': 'auto',
+    'source_address': '0.0.0.0'
+}
+
+ytdl = yt_dlp.YoutubeDL(ytdl_format_options)
+
+class YTDLSource(discord.PCMVolumeTransformer):
+    def __init__(self, source, *, data, volume=0.5):
+        super().__init__(source, volume)
+        self.data = data
+        self.title = data.get('title')
+        self.url = data.get('url')
+
+    @classmethod
+    async def from_url(cls, url, *, loop=None, stream=True):
+        loop = loop or asyncio.get_event_loop()
+        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=not stream))
+        
+        if 'entries' in data:
+            data = data['entries'][0]
+
+        filename = data['url'] if stream else ytdl.prepare_filename(data)
+        return cls(discord.FFmpegPCMAudio(filename, **{'options': '-vn'}), data=data)
 
 # Helper functions
 def get_user_data(user_id):
@@ -439,38 +478,101 @@ async def hex_convert(ctx, action, *, text):
 @bot.command(name='joke')
 async def joke(ctx):
     """21. Kể chuyện cười"""
-    jokes = [
-        "Tại sao máy tính không bao giờ cảm lạnh? Vì nó có Windows!",
-        "Programmer là gì? Là người biến cà phê thành code!",
-        "Tại sao Python lại được yêu thích? Vì nó không có bug, chỉ có feature!",
-        "Bug nào khó fix nhất? Bug của ex!",
-        "Tại sao dev không thích đi biển? Vì sợ bug overflow!"
-    ]
-    await ctx.send(f"😂 {random.choice(jokes)}")
+    try:
+        # Gọi API để lấy câu chuyện cười ngẫu nhiên (safe-mode để tránh nội dung không phù hợp)
+        response = requests.get("https://v2.jokeapi.dev/joke/Any?safe-mode&type=single&lang=en", timeout=5)
+        response.raise_for_status()
+        joke_data = response.json()
+
+        # Lấy câu chuyện cười
+        if joke_data["type"] == "single":
+            joke_en = joke_data.get("joke", "Không có câu chuyện cười nào được trả về!")
+            setup_en = None
+            delivery_en = None
+        else:
+            setup_en = joke_data.get("setup", "Không có phần mở đầu!")
+            delivery_en = joke_data.get("delivery", "Không có phần kết thúc!")
+            joke_en = f"{setup_en} {delivery_en}"
+
+        # Dịch sang tiếng Việt
+        translator = GoogleTranslator(source='en', target='vi')
+        if setup_en and delivery_en:
+            setup_vi = translator.translate(setup_en[:500])  # Giới hạn 500 ký tự
+            delivery_vi = translator.translate(delivery_en[:500])
+            joke_vi = f"{setup_vi} {delivery_vi}"
+        else:
+            joke_vi = translator.translate(joke_en[:500])
+
+        # Tạo embed
+        embed = discord.Embed(title="😂 Câu Chuyện Cười", color=0xff4500)
+        if setup_en and delivery_en:
+            embed.add_field(name="Tiếng Anh (Setup)", value=setup_en[:200] + ("..." if len(setup_en) > 200 else ""), inline=False)
+            embed.add_field(name="Tiếng Anh (Delivery)", value=delivery_en[:200] + ("..." if len(delivery_en) > 200 else ""), inline=False)
+            embed.add_field(name="Tiếng Việt", value=f"{setup_vi[:100]}... {delivery_vi[:100]}" + ("..." if len(joke_vi) > 200 else ""), inline=False)
+        else:
+            embed.add_field(name="Tiếng Anh", value=joke_en[:200] + ("..." if len(joke_en) > 200 else ""), inline=False)
+            embed.add_field(name="Tiếng Việt", value=joke_vi[:200] + ("..." if len(joke_vi) > 200 else ""), inline=False)
+        embed.set_footer(text="Nguồn: JokeAPI | Cập nhật: " + datetime.datetime.now().strftime("%d/%m/%Y %H:%M"))
+        await ctx.send(embed=embed)
+
+    except requests.exceptions.RequestException as e:
+        await ctx.send(f"❌ Lỗi khi lấy câu chuyện cười: {str(e)}")
+    except Exception as e:
+        await ctx.send(f"❌ Lỗi khi dịch câu chuyện cười: {str(e)}")
 
 @bot.command(name='fact')
 async def random_fact(ctx):
     """22. Sự thật thú vị"""
-    facts = [
-        "🧠 Con người chỉ sử dụng 10% não bộ là một myth. Thực tế chúng ta sử dụng hầu hết não bộ.",
-        "🐙 Bạch tuộc có 3 trái tim và máu màu xanh.",
-        "🍯 Mật ong không bao giờ hỏng nếu được bảo quản đúng cách.",
-        "🌙 Mặt trăng đang dần rời xa Trái Đất với tốc độ 3.8cm mỗi năm.",
-        "🦈 Cá mập đã tồn tại trước cả cây cối trên Trái Đất."
-    ]
-    await ctx.send(random.choice(facts))
+    try:
+        # Gọi API để lấy sự thật ngẫu nhiên
+        response = requests.get("https://uselessfacts.jsph.pl/api/v2/facts/random", timeout=5)
+        response.raise_for_status()
+        fact_data = response.json()
+        fact_en = fact_data.get("text", "Không có sự thật nào được trả về!")
+
+        # Dịch sang tiếng Việt
+        translator = GoogleTranslator(source='en', target='vi')
+        fact_vi = translator.translate(fact_en[:500])  # Giới hạn 500 ký tự để dịch nhanh
+
+        # Tạo embed
+        embed = discord.Embed(title="🧠 Sự Thật Thú Vị", color=0x00b7eb)
+        embed.add_field(name="Tiếng Anh", value=fact_en[:200] + ("..." if len(fact_en) > 200 else ""), inline=False)
+        embed.add_field(name="Tiếng Việt", value=fact_vi[:200] + ("..." if len(fact_vi) > 200 else ""), inline=False)
+        embed.set_footer(text="Nguồn: Useless Facts API | Cập nhật: " + datetime.datetime.now().strftime("%d/%m/%Y %H:%M"))
+        await ctx.send(embed=embed)
+
+    except requests.exceptions.RequestException as e:
+        await ctx.send(f"❌ Lỗi khi lấy sự thật: {str(e)}")
+    except Exception as e:
+        await ctx.send(f"❌ Lỗi khi dịch sự thật: {str(e)}")
 
 @bot.command(name='quote')
 async def inspirational_quote(ctx):
     """23. Câu nói truyền cảm hứng"""
-    quotes = [
-        "💡 'Code is poetry.' - Unknown",
-        "🚀 'The best way to predict the future is to create it.' - Peter Drucker",
-        "💪 'It works on my machine.' - Every developer ever",
-        "🎯 'First, solve the problem. Then, write the code.' - John Johnson",
-        "✨ 'Programming is the art of telling another human what one wants the computer to do.' - Donald Knuth"
-    ]
-    await ctx.send(random.choice(quotes))
+    try:
+        # Gọi API để lấy câu trích dẫn ngẫu nhiên
+        response = requests.get("https://api.quotable.io/random", timeout=5)
+        response.raise_for_status()
+        quote_data = response.json()
+        quote_en = quote_data.get("content", "Không có câu trích dẫn nào được trả về!")
+        author = quote_data.get("author", "Không rõ tác giả")
+
+        # Dịch sang tiếng Việt
+        translator = GoogleTranslator(source='en', target='vi')
+        quote_vi = translator.translate(quote_en[:500])  # Giới hạn 500 ký tự để dịch nhanh
+
+        # Tạo embed
+        embed = discord.Embed(title="✨ Câu Trích Dẫn Truyền Cảm Hứng", color=0xffd700)
+        embed.add_field(name="Tiếng Anh", value=f"{quote_en[:200]}..." if len(quote_en) > 200 else quote_en, inline=False)
+        embed.add_field(name="Tiếng Việt", value=f"{quote_vi[:200]}..." if len(quote_vi) > 200 else quote_vi, inline=False)
+        embed.add_field(name="Tác giả", value=author, inline=False)
+        embed.set_footer(text="Nguồn: Quotable API | Cập nhật: " + datetime.datetime.now().strftime("%d/%m/%Y %H:%M"))
+        await ctx.send(embed=embed)
+
+    except requests.exceptions.RequestException as e:
+        await ctx.send(f"❌ Lỗi khi lấy câu trích dẫn: {str(e)}")
+    except Exception as e:
+        await ctx.send(f"❌ Lỗi khi dịch câu trích dẫn: {str(e)}")
 
 @bot.command(name='roll')
 async def roll_dice(ctx, dice="1d6"):
@@ -834,32 +936,109 @@ async def fortune_cookie(ctx):
 # =============================================================================
 
 @bot.command(name='play')
-async def play_music(ctx, *, query):
-    """41. Phát nhạc"""
-    await ctx.send(f"🎵 Đang phát: {query} (Cần thư viện âm thanh để hoạt động)")
+async def play_music(ctx, *, url):
+    """41. Phát nhạc từ YouTube"""
+    if not ctx.author.voice:
+        await ctx.send("❌ Bạn cần ở trong voice channel để phát nhạc!")
+        return
+
+    channel = ctx.author.voice.channel
+    try:
+        # Kết nối voice channel nếu chưa kết nối
+        if not ctx.guild.voice_client:
+            await channel.connect()
+        
+        voice_client = ctx.guild.voice_client
+
+        # Khởi tạo hàng đợi nếu chưa có
+        if ctx.guild.id not in music_queues:
+            music_queues[ctx.guild.id] = queue.Queue()
+
+        # Thêm bài hát vào hàng đợi
+        music_queues[ctx.guild.id].put(url)
+
+        # Nếu đang phát nhạc, thông báo thêm vào hàng đợi
+        if voice_client.is_playing():
+            await ctx.send(f"🎵 Đã thêm vào hàng đợi: {url}")
+            return
+
+        # Phát nhạc từ hàng đợi
+        async def play_next():
+            if music_queues[ctx.guild.id].empty():
+                await voice_client.disconnect()
+                return
+
+            next_url = music_queues[ctx.guild.id].get()
+            try:
+                player = await YTDLSource.from_url(next_url, loop=bot.loop, stream=True)
+                voice_client.play(player, after=lambda e: bot.loop.create_task(play_next()))
+                
+                embed = discord.Embed(title="🎵 Đang Phát Nhạc", color=0x1db954)
+                embed.add_field(name="Bài Hát", value=player.title, inline=False)
+                embed.add_field(name="URL", value=next_url, inline=False)
+                embed.set_footer(text="Nguồn: YouTube | Cập nhật: " + datetime.datetime.now().strftime("%d/%m/%Y %H:%M"))
+                await ctx.send(embed=embed)
+            except Exception as e:
+                await ctx.send(f"❌ Lỗi khi phát nhạc: {str(e)}")
+                bot.loop.create_task(play_next())
+
+        await play_next()
+
+    except Exception as e:
+        await ctx.send(f"❌ Lỗi khi kết nối hoặc phát nhạc: {str(e)}")
 
 @bot.command(name='pause')
 async def pause_music(ctx):
     """42. Tạm dừng nhạc"""
-    await ctx.send("⏸️ Đã tạm dừng nhạc")
+    voice_client = ctx.guild.voice_client
+    if voice_client and voice_client.is_playing():
+        voice_client.pause()
+        await ctx.send("⏸️ Đã tạm dừng nhạc")
+    else:
+        await ctx.send("❌ Không có nhạc đang phát!")
 
 @bot.command(name='skip')
 async def skip_music(ctx):
     """43. Bỏ qua bài hát"""
-    await ctx.send("⏭️ Đã bỏ qua bài hát")
+    voice_client = ctx.guild.voice_client
+    if voice_client and voice_client.is_playing():
+        voice_client.stop()  # Dừng bài hiện tại, after callback sẽ phát bài tiếp theo
+        await ctx.send("⏭️ Đã bỏ qua bài hát")
+    else:
+        await ctx.send("❌ Không có nhạc đang phát!")
 
 @bot.command(name='queue')
 async def music_queue(ctx):
     """44. Hàng đợi nhạc"""
-    await ctx.send("📋 Hàng đợi trống")
+    if ctx.guild.id not in music_queues or music_queues[ctx.guild.id].empty():
+        await ctx.send("📋 Hàng đợi trống")
+        return
+
+    queue_list = list(music_queues[ctx.guild.id].queue)
+    if not queue_list:
+        await ctx.send("📋 Hàng đợi trống")
+        return
+
+    embed = discord.Embed(title="📋 Hàng Đợi Nhạc", color=0x1db954)
+    for i, url in enumerate(queue_list, 1):
+        embed.add_field(name=f"Bài {i}", value=url[:100] + ("..." if len(url) > 100 else ""), inline=False)
+    embed.set_footer(text="Cập nhật: " + datetime.datetime.now().strftime("%d/%m/%Y %H:%M"))
+    await ctx.send(embed=embed)
 
 @bot.command(name='volume')
 async def set_volume(ctx, volume: int):
     """45. Điều chỉnh âm lượng"""
-    if 0 <= volume <= 100:
-        await ctx.send(f"🔊 Đã đặt âm lượng: {volume}%")
-    else:
+    voice_client = ctx.guild.voice_client
+    if not voice_client or not voice_client.is_playing():
+        await ctx.send("❌ Không có nhạc đang phát!")
+        return
+
+    if not 0 <= volume <= 100:
         await ctx.send("❌ Âm lượng phải từ 0-100!")
+        return
+
+    voice_client.source.volume = volume / 100
+    await ctx.send(f"🔊 Đã đặt âm lượng: {volume}%")
 
 @bot.command(name='lyrics')
 async def get_lyrics(ctx, *, song):
