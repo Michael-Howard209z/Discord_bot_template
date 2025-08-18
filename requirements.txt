@@ -1,0 +1,6 @@
+discord.py==2.4.0
+python-dotenv==1.0.1
+requests==2.32.3
+gTTS==2.5.3
+deep-translator==1.11.4
+yt-dlp==2023.12.30

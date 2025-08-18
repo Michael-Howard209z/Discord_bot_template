@@ -36,6 +36,20 @@ cd your-repo
 ```bash
 pip install -r requirements.txt
 ```
+3. **Install FFmpeg**:
+
+Windows
+```bash
+   choco install ffmpeg
+   ```
+Linux
+```bash
+   sudo apt-get install ffmpeg
+   ```
+Mac os
+```bash
+   brew install ffmpeg
+   ``` 
 
 3. **Thiết lập Biến Môi trường**:
 - Tạo tệp ``.env` trong thư mục gốc của dự án.
