@@ -36,7 +36,22 @@ A feature-rich Discord bot built with Python and `discord.py`, offering over 100
    pip install -r requirements.txt
    ```
 
-3. **Set Up Environment Variables**:
+3. **Install FFmpeg**:
+
+Windows
+```bash
+   choco install ffmpeg
+   ```
+Linux
+```bash
+   sudo apt-get install ffmpeg
+   ```
+Mac os
+```bash
+   brew install ffmpeg
+   ```      
+
+4. **Set Up Environment Variables**:
    - Create a `.env` file in the project root.
    - Add the following:
      ```plaintext
@@ -47,7 +62,7 @@ A feature-rich Discord bot built with Python and `discord.py`, offering over 100
      ```
    - Replace `your_discord_bot_token`, etc., with actual keys. For instructions on obtaining keys, see the [Prerequisites](#prerequisites).
 
-4. **Run the Bot**:
+5. **Run the Bot**:
    ```bash
    python main.py
    ```
