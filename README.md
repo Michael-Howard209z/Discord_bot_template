@@ -1,6 +1,6 @@
 # Discord Bot
 
-![Alt text](1.jpg#gh-dark-mode-only)
+![Alt text](picture/1.jpg#gh-dark-mode-only)
 
 ## 🌐 Select Language
 
