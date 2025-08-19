@@ -28,8 +28,8 @@ Một bot Discord giàu tính năng được xây dựng bằng Python và `disc
 ## Cài đặt
 1. **Sao chép Kho lưu trữ**:
 ```bash
-git clone https://github.com/your-username/your-repo.git
-cd your-repo
+git clone https://github.com/concuchaba2912/Discord_bot_template.git
+Discord_bot_template
 ```
 
 2. **Cài đặt các Phụ thuộc**:
@@ -104,5 +104,6 @@ Mọi hình thức sử dụng thương mại (bán, cho thuê, dịch vụ tr�
 đều bị nghiêm cấm nếu không có sự đồng ý bằng văn bản của tác giả.
 
 ## Liên hệ
+
 
 <img src="qr.png">
