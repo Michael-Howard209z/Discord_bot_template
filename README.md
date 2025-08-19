@@ -30,8 +30,8 @@ A feature-rich Discord bot built with Python and `discord.py`, offering over 100
 ## Installation
 1. **Clone the Repository**:
    ```bash
-   git clone https://github.com/your-username/your-repo.git
-   cd your-repo
+   git clone https://github.com/concuchaba2912/Discord_bot_template
+   cd Discord_bot_template
    ```
 
 2. **Install Dependencies**:
