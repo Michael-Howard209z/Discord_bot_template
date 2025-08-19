@@ -10,16 +10,22 @@ import base64
 import hashlib
 import time
 import os
+import aiohttp
 from dotenv import load_dotenv
 import sqlite3
 import re
+import psutil
 import urllib.parse
 from deep_translator import GoogleTranslator
 import queue
 import yt_dlp
+import google.generativeai as genai  # Import Gemini API theo mẫu mới
+from google.generativeai.types import GenerationConfig  # Import GenerationConfig
 # Load environment variables
 load_dotenv()
-
+# Khởi tạo Gemini (thêm vào đầu file hoặc trước các lệnh, nếu chưa có)
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+model = genai.GenerativeModel("gemini-1.5-flash")
 # Bot setup
 intents = discord.Intents.default()
 intents.message_content = True
@@ -170,8 +176,8 @@ async def on_ready():
 async def help_all(ctx):
     """1. Hiển thị tất cả lệnh của bot"""
     embed = discord.Embed(title="📋 Danh sách 100 lệnh", color=0x00ff00)
-    embed.add_field(name="Thông tin & Tiện ích (1-20)", value="!info, !ping, !uptime, !avatar, !serverinfo, !userinfo, !math, !translate, !weather, !time, !qr, !shorten, !password, !color, !ip, !hash, !base64, !binary, !hex, !ascii", inline=False)
-    embed.add_field(name="Giải trí & Trò chơi (21-40)", value="!joke, !fact, !quote, !roll, !coinflip, !8ball, !rps, !trivia, !hangman, !number_guess, !word_chain, !riddle, !story, !meme, !gif, !emoji_react, !truth_dare, !would_you_rather, !this_or_that, !fortune", inline=False)
+    embed.add_field(name="Thông tin & Tiện ích (1-20)", value="!info, !ping, !uptime, !avatar, !serverinfo, !userinfo, !math, !translate, !weather, !time, !qr, !shorten, !password, !color, !ip, !hash, !base64, !binary, !hex, !vt, !ascii", inline=False)
+    embed.add_field(name="Giải trí & Trò chơi (21-40)", value="!waifu, !chat, !joke, !fact, !quote, !roll, !coinflip, !8ball, !rps, !trivia, !hangman, !number_guess, !word_chain, !riddle, !story, !meme, !gif, !emoji_react, !truth_dare, !would_you_rather, !this_or_that, !fortune", inline=False)
     embed.add_field(name="Âm nhạc & Media (41-50)", value="!play, !pause, !skip, !queue, !volume, !lyrics, !spotify, !youtube, !podcast, !radio", inline=False)
     embed.add_field(name="Quản lý & Moderation (51-65)", value="!ban, !kick, !mute, !unmute, !warn, !clear, !slowmode, !lock, !unlock, !role, !nick, !announce, !poll, !vote, !automod, !log", inline=False)
     embed.add_field(name="Kinh tế & Leveling (66-80)", value="!daily, !balance, !pay, !shop, !buy, !inventory, !gamble, !work, !level, !leaderboard, !rank, !exp, !profile, !badge, !achievement", inline=False)
@@ -471,9 +477,294 @@ async def hex_convert(ctx, action, *, text):
     except Exception:
         await ctx.send("❌ Không thể chuyển đổi!")
 
+# Thêm lệnh !vt
+@bot.command(name='vt')
+@commands.cooldown(1, 5, commands.BucketType.user)  # 1 lần/5 giây/người dùng
+async def virustotal(ctx, *, input: str = None):
+    """Quét URL, file hash, hoặc file đính kèm bằng VirusTotal API v3"""
+    if not os.getenv("VIRUSTOTAL_API_KEY"):
+        await ctx.send("❌ Lỗi: Thiếu API key VirusTotal! Vui lòng liên hệ admin.")
+        return
+
+    headers = {
+        "x-apikey": os.getenv("VIRUSTOTAL_API_KEY"),
+        "accept": "application/json"
+    }
+
+    # Kiểm tra input và file đính kèm
+    is_file = False
+    if ctx.message.attachments:
+        attachment = ctx.message.attachments[0]
+        if attachment.size > 32 * 1024 * 1024:  # 32MB
+            await ctx.send("❌ Lỗi: File quá lớn! VirusTotal chỉ hỗ trợ file <32MB.")
+            return
+        is_file = True
+    elif input:
+        # Kiểm tra URL hoặc hash
+        url_pattern = re.compile(r'^(https?://)?([\w.-]+)\.([a-z]{2,})(/.*)?$')
+        hash_pattern = re.compile(r'^[a-fA-F0-9]{32}$|^[a-fA-F0-9]{40}$|^[a-fA-F0-9]{64}$')  # MD5, SHA1, SHA256
+        input = input.strip()
+        if url_pattern.match(input):
+            type = "url"
+            if not input.startswith(("http://", "https://")):
+                input = "https://" + input
+            import base64
+            url_id = base64.urlsafe_b64encode(input.encode()).decode().rstrip("=")
+            endpoint = f"https://www.virustotal.com/api/v3/urls/{url_id}"
+        elif hash_pattern.match(input):
+            type = "file"
+            endpoint = f"https://www.virustotal.com/api/v3/files/{input}"
+        else:
+            await ctx.send("❌ Input không hợp lệ! Vui lòng cung cấp URL, hash (MD5/SHA1/SHA256), hoặc đính kèm file.")
+            return
+    else:
+        await ctx.send("❌ Vui lòng cung cấp URL, hash, hoặc đính kèm file để quét!")
+        return
+
+    # Retry logic: Thử tối đa 3 lần
+    max_retries = 3
+    retry_delay = 5  # Giây
+    for attempt in range(max_retries):
+        try:
+            if is_file:
+                # Tải file từ Discord
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(attachment.url) as resp:
+                        if resp.status != 200:
+                            await ctx.send("❌ Lỗi: Không thể tải file đính kèm!")
+                            return
+                        file_data = await resp.read()
+                
+                # Upload file lên VirusTotal
+                upload_endpoint = "https://www.virustotal.com/api/v3/files"
+                files = {"file": (attachment.filename, file_data)}
+                response = requests.post(upload_endpoint, headers=headers, files=files, timeout=10)
+                response.raise_for_status()
+                analysis_id = response.json().get("data", {}).get("id")
+                
+                # Chờ kết quả quét (tối đa 60 giây)
+                analysis_endpoint = f"https://www.virustotal.com/api/v3/analyses/{analysis_id}"
+                max_wait = 60  # Giây
+                wait_interval = 5  # Giây
+                elapsed = 0
+                while elapsed < max_wait:
+                    response = requests.get(analysis_endpoint, headers=headers, timeout=10)
+                    response.raise_for_status()
+                    status = response.json().get("data", {}).get("attributes", {}).get("status")
+                    if status == "completed":
+                        break
+                    await asyncio.sleep(wait_interval)
+                    elapsed += wait_interval
+                
+                if status != "completed":
+                    await ctx.send("❌ Lỗi: Quét file không hoàn tất trong thời gian chờ (60 giây)! Vui lòng thử lại.")
+                    return
+                
+                # Lấy kết quả file
+                file_id = response.json().get("data", {}).get("attributes", {}).get("results", {}).get("sha256")
+                if not file_id:
+                    await ctx.send("❌ Lỗi: Không lấy được SHA256 của file! Vui lòng thử lại.")
+                    return
+                endpoint = f"https://www.virustotal.com/api/v3/files/{file_id}"
+                response = requests.get(endpoint, headers=headers, timeout=10)
+                response.raise_for_status()
+                type = "file"
+            
+            # Gọi API VirusTotal
+            response = requests.get(endpoint, headers=headers, timeout=10)
+            response.raise_for_status()
+            data = response.json().get("data", {}).get("attributes", {})
+
+            if not data:
+                await ctx.send("❌ Không tìm thấy dữ liệu từ VirusTotal! Vui lòng thử lại.")
+                return
+
+            # Tạo embed
+            embed = discord.Embed(title="🔍 Kết Quả VirusTotal", color=0x00b7eb)
+            embed.add_field(name="Input", value=(attachment.filename if is_file else input)[:200] + ("..." if len(attachment.filename if is_file else input) > 200 else ""), inline=False)
+            
+            stats = data.get("last_analysis_stats", {})
+            embed.add_field(name="Trạng Thái", value="Đã quét", inline=False)
+            embed.add_field(name="Kết Quả", value=f"Độc hại: {stats.get('malicious', 0)} | Nghi ngờ: {stats.get('suspicious', 0)} | An toàn: {stats.get('harmless', 0)} | Không xác định: {stats.get('undetected', 0)}", inline=False)
+            embed.add_field(name="Lần Quét Cuối", value=datetime.datetime.fromtimestamp(data.get("last_analysis_date", 0)).strftime("%d/%m/%Y %H:%M"), inline=False)
+            
+            if type == "url":
+                embed.add_field(name="Lượt Bình Chọn", value=f"An toàn: {data.get('total_votes', {}).get('harmless', 0)} | Độc hại: {data.get('total_votes', {}).get('malicious', 0)}", inline=False)
+            else:  # file
+                embed.add_field(name="Tên File", value=", ".join(data.get("names", ["Không xác định"]))[:200], inline=False)
+            
+            embed.set_footer(text="Nguồn: VirusTotal | Cập nhật: " + datetime.datetime.now().strftime("%d/%m/%Y %H:%M"))
+            await ctx.send(embed=embed)
+            return
+
+        except requests.exceptions.HTTPError as e:
+            if response.status_code == 429:
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)  # Chờ trước khi thử lại
+                    continue
+                await ctx.send("❌ Quá nhiều yêu cầu đến VirusTotal API! Vui lòng thử lại sau vài giây.")
+                return
+            elif response.status_code == 404:
+                await ctx.send("❌ Không tìm thấy báo cáo cho input này! Có thể file chưa được quét hoặc không hợp lệ. Vui lòng thử lại hoặc dùng file khác.")
+                return
+            else:
+                await ctx.send(f"❌ Lỗi khi gọi VirusTotal API: {str(e)}")
+                return
+        except Exception as e:
+            await ctx.send(f"❌ Lỗi khi xử lý yêu cầu: {str(e)}")
+            return
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandOnCooldown):
+        await ctx.send(f"❌ Lệnh đang trong thời gian chờ! Thử lại sau {error.retry_after:.2f} giây.")
+    else:
+        raise error    
+
 # =============================================================================
 # LỆNH GIẢI TRÍ VÀ TRÒ CHƠI (21-40)
 # =============================================================================
+
+# Thêm lệnh !waifu
+@bot.command(name='waifu')
+@commands.cooldown(1, 5, commands.BucketType.user)  # 1 lần/5 giây/người dùng
+async def waifu(ctx, type: str = "sfw", category: str = None):
+    """Lấy hình ảnh anime ngẫu nhiên từ waifu.pics (SFW hoặc NSFW)"""
+    # Danh sách danh mục từ https://waifu.pics/docs
+    sfw_categories = [
+        "waifu", "neko", "shinobu", "megumin", "bully", "cuddle",
+        "cry", "hug", "awoo", "kiss", "lick", "pat", "smug",
+        "bonk", "yeet", "blush", "smile", "wave", "highfive",
+        "handhold", "nom", "bite", "glomp", "slap", "kill",
+        "kick", "happy", "wink", "poke", "dance", "cringe"
+    ]
+    nsfw_categories = ["waifu", "neko", "trap", "blowjob"]
+
+    # Xác định loại (sfw hoặc nsfw)
+    type = type.lower()
+    if type not in ["sfw", "nsfw"]:
+        await ctx.send("❌ Loại không hợp lệ! Chọn 'sfw' hoặc 'nsfw'.")
+        return
+
+    # Kiểm tra kênh NSFW nếu type là nsfw
+    if type == "nsfw" and not ctx.channel.is_nsfw():
+        await ctx.send("❌ Nội dung NSFW chỉ được sử dụng trong kênh NSFW!")
+        return
+
+    # Chọn danh sách danh mục dựa trên type
+    categories = sfw_categories if type == "sfw" else nsfw_categories
+
+    # Nếu không có danh mục, chọn ngẫu nhiên từ danh sách
+    if category is None:
+        category = "waifu"  # Mặc định
+        category_display = f"{type}/waifu (ngẫu nhiên)"
+    else:
+        category = category.lower()
+        if category not in categories:
+            await ctx.send(f"❌ Danh mục không hợp lệ! Các danh mục {type.upper()}: {', '.join(categories)}")
+            return
+        category_display = f"{type}/{category}"
+
+    # Tạo URL endpoint
+    endpoint = f"https://api.waifu.pics/{type}/{category}"
+
+    # Retry logic: Thử tối đa 3 lần
+    max_retries = 3
+    retry_delay = 5  # Giây
+    for attempt in range(max_retries):
+        try:
+            # Gọi API waifu.pics
+            response = requests.get(endpoint, timeout=10)
+            response.raise_for_status()  # Kiểm tra lỗi HTTP
+            data = response.json()
+            image_url = data.get("url")
+
+            if not image_url:
+                await ctx.send("❌ Lỗi: Không lấy được hình ảnh từ API!")
+                return
+
+            # Tạo embed
+            embed = discord.Embed(title="🎨 Hình Ảnh Anime", color=0x00b7eb)
+            embed.set_image(url=image_url)
+            embed.add_field(name="Loại/Danh Mục", value=category_display.capitalize(), inline=False)
+            embed.set_footer(text="Nguồn: waifu.pics | Cập nhật: " + datetime.datetime.now().strftime("%d/%m/%Y %H:%M"))
+            await ctx.send(embed=embed)
+            return
+
+        except requests.exceptions.HTTPError as e:
+            if response.status_code == 429:
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)  # Chờ trước khi thử lại
+                    continue
+                await ctx.send("❌ Quá nhiều yêu cầu đến waifu.pics API! Vui lòng thử lại sau vài giây.")
+                return
+            else:
+                await ctx.send(f"❌ Lỗi khi gọi waifu.pics API: {str(e)}")
+                return
+        except Exception as e:
+            await ctx.send(f"❌ Lỗi khi xử lý hình ảnh: {str(e)}")
+            return
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandOnCooldown):
+        await ctx.send(f"❌ Lệnh đang trong thời gian chờ! Thử lại sau {error.retry_after:.2f} giây.")
+    else:
+        raise error
+
+@bot.command(name='chat')
+@commands.cooldown(1, 5, commands.BucketType.user)  # 1 lần/5 giây/người dùng
+async def chat_gemini(ctx, *, query):
+    """51. Trò chuyện với Gemini"""
+    if not os.getenv("GEMINI_API_KEY"):
+        await ctx.send("❌ Lỗi: Thiếu API key Gemini! Vui lòng liên hệ admin.")
+        return
+
+    # Retry logic: Thử tối đa 3 lần
+    max_retries = 3
+    retry_delay = 5  # Giây
+    for attempt in range(max_retries):
+        try:
+            # Gọi Gemini API
+            response = model.generate_content(
+                contents=query,
+                generation_config=GenerationConfig(
+                    max_output_tokens=150,
+                    temperature=0.7
+                )
+            )
+            answer_en = response.text.strip()
+
+            # Dịch sang tiếng Việt
+            translator = GoogleTranslator(source='en', target='vi')
+            answer_vi = translator.translate(answer_en[:500])  # Giới hạn 500 ký tự
+
+            # Tạo embed
+            embed = discord.Embed(title="💬 Trò Chuyện với Gemini", color=0x00b7eb)
+            embed.add_field(name="Câu Hỏi", value=query[:200] + ("..." if len(query) > 200 else ""), inline=False)
+            embed.add_field(name="Trả Lời (Tiếng Anh)", value=answer_en[:200] + ("..." if len(answer_en) > 200 else ""), inline=False)
+            embed.add_field(name="Trả Lời (Tiếng Việt)", value=answer_vi[:200] + ("..." if len(answer_vi) > 200 else ""), inline=False)
+            embed.set_footer(text="Nguồn: Google Gemini | Cập nhật: " + datetime.datetime.now().strftime("%d/%m/%Y %H:%M"))
+            await ctx.send(embed=embed)
+            return
+
+        except Exception as e:
+            if "rate limit" in str(e).lower() or "429" in str(e).lower():
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)  # Chờ trước khi thử lại
+                    continue
+                await ctx.send("❌ Quá nhiều yêu cầu đến Gemini API! Vui lòng thử lại sau vài giây.")
+                return
+            else:
+                await ctx.send(f"❌ Lỗi khi gọi Gemini API: {str(e)}")
+                return
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandOnCooldown):
+        await ctx.send(f"❌ Lệnh đang trong thời gian chờ! Thử lại sau {error.retry_after:.2f} giây.")
+    else:
+        raise error
 
 @bot.command(name='joke')
 async def joke(ctx):
@@ -861,7 +1152,7 @@ async def gif_search(ctx, *, query):
 @bot.command(name='emoji_react')
 async def emoji_react(ctx):
     """36. React emoji ngẫu nhiên"""
-    emojis = ['😀', '😂', '🤔', '😎', '🔥', '💯', '🎉', '👍', '❤️', '🤖']
+    emojis = ['😀', '😂', '🤔', '😎', '🔥', '💯', '🎉', '👍', '❤️', '🤖','😎','😈']
     for _ in range(3):
         try:
             await ctx.message.add_reaction(random.choice(emojis))
@@ -2109,7 +2400,7 @@ async def on_message(message):
     
     # Auto-moderation (simple)
     if message.guild:
-        bad_words = ['spam', 'hack', 'cheat']  # Thêm từ cấm tùy ý
+        bad_words = ['spam', 'hack', 'cheat', 'Lồn', 'cặc', 'ditmemay', 'https:']  # Thêm từ cấm tùy ý
         if any(word in message.content.lower() for word in bad_words):
             try:
                 await message.delete()
@@ -2240,7 +2531,6 @@ async def debug_info(ctx):
     
     # Memory usage (nếu có thể)
     try:
-        import psutil
         process = psutil.Process()
         memory_mb = process.memory_info().rss / 1024 / 1024
         embed.add_field(name="Memory", value=f"{memory_mb:.2f} MB", inline=True)
