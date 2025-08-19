@@ -1,4 +1,7 @@
 # Discord Bot
+
+![Alt text](1.jpg#gh-dark-mode-only)
+
 ## 🌐 Select Language
 
 [<img src="https://upload.wikimedia.org/wikipedia/commons/2/21/Flag_of_Vietnam.svg" alt="Tiếng Việt" width="40"/>](README_vi.md)
