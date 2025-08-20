@@ -2,7 +2,7 @@
 ## 🌐 Lựa chọn ngôn ngữ
 
 [<img src="https://upload.wikimedia.org/wikipedia/commons/2/21/Flag_of_Vietnam.svg" alt="Tiếng Việt" width="40"/>](README_vi.md)
-[<img src="https://upload.wikimedia.org/wikipedia/en/a/a4/Flag_of_the_United_States.svg" alt="English" width="40"/>](README_en.md)
+[<img src="https://upload.wikimedia.org/wikipedia/en/a/a4/Flag_of_the_United_States.svg" alt="English" width="40"/>](README.md)
 
 VI
 Một bot Discord giàu tính năng được xây dựng bằng Python và `discord.py`, cung cấp hơn 100 lệnh cho thông tin, giải trí, âm nhạc, kiểm duyệt, tiết kiệm và các tiện ích nâng cao. Bot này được thiết kế để tăng cường tương tác với máy chủ với các tính năng như tìm kiếm GIF, rút gọn URL, dịch thuật, tìm kiếm podcast, v.v.
@@ -28,8 +28,8 @@ Một bot Discord giàu tính năng được xây dựng bằng Python và `disc
 ## Cài đặt
 1. **Sao chép Kho lưu trữ**:
 ```bash
-git clone https://github.com/concuchaba2912/Discord_bot_template.git
-Discord_bot_template
+git clone https://github.com/Michael-Howard209z/Discord_bot_template.git
+cd your-repo
 ```
 
 2. **Cài đặt các Phụ thuộc**:
@@ -50,15 +50,21 @@ Mac os
 ```bash
    brew install ffmpeg
    ``` 
+Termux 
+```bash
+   pkg install ffmpeg
+   ```   
 
 3. **Thiết lập Biến Môi trường**:
 - Tạo tệp ``.env` trong thư mục gốc của dự án.
 - Thêm nội dung sau:
 ```plaintext
-DISCORD_BOT_TOKEN=your_discord_bot_token
-BITLY_API_KEY=your_bitly_api_key
-LISTENNOTES_API_KEY=your_listennotes_api_key
-TENOR_API_KEY=your_tenor_api_key
+     DISCORD_BOT_TOKEN=your_discord_bot_token
+     BITLY_API_KEY=your_bitly_api_key
+     LISTENNOTES_API_KEY=your_listennotes_api_key
+     TENOR_API_KEY=your_tenor_api_key
+     VIRUSTOTAL_API_KEY=
+     GEMINI_API_KEY=
 ```
 - Thay thế ``your_discord_bot_token`, v.v., bằng các khóa thực tế. Để biết hướng dẫn về cách lấy khóa, hãy xem [Điều kiện tiên quyết](#điều kiện tiên quyết).
 
@@ -104,6 +110,5 @@ Mọi hình thức sử dụng thương mại (bán, cho thuê, dịch vụ tr�
 đều bị nghiêm cấm nếu không có sự đồng ý bằng văn bản của tác giả.
 
 ## Liên hệ
-
 
 <img src="qr.png">
