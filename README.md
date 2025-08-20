@@ -20,18 +20,20 @@ A feature-rich Discord bot built with Python and `discord.py`, offering over 100
 - **Dynamic Status**: Bot cycles through statuses like "Playing a fun game", "Watching a movie", etc.
 
 ## Prerequisites
-- Python 3.12 or higher
+- Python 3.11 or higher
 - A Discord bot token (from [Discord Developer Portal](https://discord.com/developers/applications))
 - Optional API keys for enhanced features:
   - [Bitly API](https://dev.bitly.com/) for URL shortening (`!shorten`)
   - [Listen Notes API](https://www.listennotes.com/api/) for podcast search (`!podcast`)
   - [Tenor API](https://tenor.com/developer/keyregistration) for GIF search (`!gif`)
+  - [Gemini API](https://aistudio.google.com/apikey) for Chat (`!chat`)
+  - [Virus Total API](https://www.virustotal.com/gui/my-apikey) for scan virus url (`!vt`)
 
 ## Installation
 1. **Clone the Repository**:
    ```bash
-   git clone https://github.com/concuchaba2912/Discord_bot_template
-   cd Discord_bot_template
+   git clone https://github.com/Michael-Howard209z/Discord_bot_template.git
+   cd your-repo
    ```
 
 2. **Install Dependencies**:
@@ -52,6 +54,10 @@ Linux
 Mac os
 ```bash
    brew install ffmpeg
+   ```   
+Termux
+```bash
+   pkg install ffmpeg
    ```      
 
 4. **Set Up Environment Variables**:
@@ -62,6 +68,8 @@ Mac os
      BITLY_API_KEY=your_bitly_api_key
      LISTENNOTES_API_KEY=your_listennotes_api_key
      TENOR_API_KEY=your_tenor_api_key
+     VIRUSTOTAL_API_KEY=
+     GEMINI_API_KEY=
      ```
    - Replace `your_discord_bot_token`, etc., with actual keys. For instructions on obtaining keys, see the [Prerequisites](#prerequisites).
 
@@ -69,6 +77,9 @@ Mac os
    ```bash
    python main.py
    ```
+
+6. **Error run bot with termux android**
+   - I tested running the bot on termux environment and        encountered some errors installing google api library if you also encounter the same error you can message me via the qr code below
 
 ## Configuration
 - **Discord Bot Permissions**:
@@ -89,6 +100,9 @@ Mac os
      - `!shorten https://example.com`: Shorten a URL.
      - `!podcast tech`: Search for tech podcasts with Vietnamese TTS description.
 3. **Dynamic Status**: The bot cycles through statuses every 30 seconds (e.g., "Watching a movie", "Listening to music").
+
+## Unused commands
+   - Some commands use api but I'm lazy to find so I haven't added them yet, maybe I'll update all of them later
 
 ## Contributing
 - Fork the repository.
