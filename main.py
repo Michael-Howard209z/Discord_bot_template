@@ -18,41 +18,89 @@ import psutil
 import urllib.parse
 from deep_translator import GoogleTranslator
 import queue
+import xml.etree.ElementTree as ET
 import yt_dlp
-import google.generativeai as genai  # Import Gemini API theo mẫu mới
-from google.generativeai.types import GenerationConfig  # Import GenerationConfig
-# Load environment variables
+import google.generativeai as genai 
+from google.generativeai.types import GenerationConfig  
 load_dotenv()
-# Khởi tạo Gemini (thêm vào đầu file hoặc trước các lệnh, nếu chưa có)
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 model = genai.GenerativeModel("gemini-1.5-flash")
-# Bot setup
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix='!', intents=intents)
+try:
+    with open("mod.json", "r", encoding="utf-8") as f:
+        mod_data = json.load(f)
+        FORBIDDEN_WORDS = mod_data.get("forbidden_words", [])
+except FileNotFoundError:
+    FORBIDDEN_WORDS = ['spam', 'hack', 'cheat', 'Lồn', 'cặc', 'ditmemay', 'bú', 'mẹ mày']  
+except json.JSONDecodeError:
+    print("Lỗi: mod.json không hợp lệ, sử dụng fallback.")
+    FORBIDDEN_WORDS = ['spam', 'hack', 'cheat', 'Lồn', 'cặc', 'ditmemay', 'bú', 'mẹ mày']
 
-# Database setup
+async def log_event(guild, event_message):
+    """Ghi log sự kiện vào file và kênh log (tự động phát hiện kênh)"""
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_entry = f"[{timestamp}] {guild.name}: {event_message}\n"
+    try:
+        with open("server_log.txt", "a", encoding="utf-8") as f:
+            f.write(log_entry)
+    except Exception as e:
+        print(f"Lỗi khi ghi log vào file: {str(e)}")
+    
+    log_channel = None
+    for channel in guild.text_channels:
+        if channel.name in ["server-log", "log", "logs"]:  
+            log_channel = channel
+            break
+    # Bỏ phần này vì ctx không tồn tại:
+    # if not log_channel:
+    #     if 'ctx' in globals() and hasattr(ctx, 'channel'):
+    #         log_channel = ctx.channel
+    
+    # Gửi vào kênh log nếu tìm thấy
+    if log_channel and log_channel.permissions_for(guild.me).send_messages:
+        try:
+            embed = discord.Embed(
+                title="📋 Server Log",
+                description=log_entry,
+                color=0x34495e,
+                timestamp=datetime.datetime.now()
+            )
+            await log_channel.send(embed=embed)
+        except Exception as e:
+            print(f"Lỗi khi gửi log vào kênh: {str(e)}")
+            
+# Khởi tạo SQLite
 def init_db():
     conn = sqlite3.connect('bot_data.db')
     c = conn.cursor()
     
-    # User data table
+    c.execute("""CREATE TABLE IF NOT EXISTS automod (
+        guild_id INTEGER PRIMARY KEY,
+        status TEXT DEFAULT 'off'
+    )""")
+    
+
+    c.execute("""CREATE TABLE IF NOT EXISTS memes (
+        meme_id INTEGER PRIMARY KEY,
+        guild_id INTEGER,
+        timestamp TEXT
+    )""")
+    
+
     c.execute('''CREATE TABLE IF NOT EXISTS users
                  (user_id INTEGER PRIMARY KEY, 
                   level INTEGER DEFAULT 1,
                   exp INTEGER DEFAULT 0,
                   coins INTEGER DEFAULT 100,
                   last_daily TEXT)''')
-    
-    # Reminders table
     c.execute('''CREATE TABLE IF NOT EXISTS reminders
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   user_id INTEGER,
                   message TEXT,
                   remind_time TEXT)''')
-    
-    # Notes table
     c.execute('''CREATE TABLE IF NOT EXISTS notes
                  (user_id INTEGER,
                   note_id INTEGER,
@@ -63,12 +111,16 @@ def init_db():
     conn.commit()
     conn.close()
 
+
 init_db()
 
-# Khởi tạo hàng đợi nhạc
-music_queues = {}  # {guild_id: queue.Queue()}
 
-# Cấu hình yt-dlp
+LINK_PATTERN = re.compile(r'https?://[^\s]+')
+
+
+music_queues = {}  
+
+
 ytdl_format_options = {
     'format': 'bestaudio/best',
     'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
@@ -103,7 +155,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         filename = data['url'] if stream else ytdl.prepare_filename(data)
         return cls(discord.FFmpegPCMAudio(filename, **{'options': '-vn'}), data=data)
 
-# Helper functions
+
 def get_user_data(user_id):
     conn = sqlite3.connect('bot_data.db')
     c = conn.cursor()
@@ -143,7 +195,7 @@ def update_user_data(user_id, level=None, exp=None, coins=None, last_daily=None)
     conn.commit()
     conn.close()
 
-# Danh sách trạng thái động (bao gồm streaming với URL)
+
 statuses = [
     discord.Activity(type=discord.ActivityType.playing, name="Đang chơi Freefire"),
     discord.Activity(type=discord.ActivityType.watching, name="Đang xem review phim"),
@@ -156,7 +208,7 @@ statuses = [
     discord.Streaming(name="W/n", url="youtube.com/watch?v=OA8s2Gr3KEE&list=RDMMOA8s2Gr3KEE&start_radio=1"),
 ]
 
-@tasks.loop(seconds=30)  # Thay đổi mỗi 30 giây
+@tasks.loop(seconds=30)  
 async def change_status():
     """Thay đổi trạng thái bot ngẫu nhiên"""
     status = random.choice(statuses)
@@ -166,7 +218,8 @@ async def change_status():
 async def on_ready():
     print(f'{bot.user} đã sẵn sàng!')
     check_reminders.start()
-    change_status.start()  # Bắt đầu task thay đổi trạng thái
+    change_status.start()  
+    
 
 # =============================================================================
 # LỆNH THÔNG TIN VÀ TIỆN ÍCH CHUNG (1-20)
@@ -182,11 +235,22 @@ async def help_all(ctx):
     embed.add_field(name="Quản lý & Moderation (51-65)", value="!ban, !kick, !mute, !unmute, !warn, !clear, !slowmode, !lock, !unlock, !role, !nick, !announce, !poll, !vote, !automod, !log", inline=False)
     embed.add_field(name="Kinh tế & Leveling (66-80)", value="!daily, !balance, !pay, !shop, !buy, !inventory, !gamble, !work, !level, !leaderboard, !rank, !exp, !profile, !badge, !achievement", inline=False)
     embed.add_field(name="Tiện ích nâng cao (81-100)", value="!remind, !todo, !note, !calc, !convert, !search, !news, !stock, !crypto, !bookmark, !schedule, !timer, !stopwatch, !alarm, !backup, !export, !import, !stats, !analyze, !report", inline=False)
-    # Hiển thị trạng thái hiện tại
+    embed.add_field(name="Trợ giúp", value="!help để hiển thị cách sử dụng lệnh")
     current_status = bot.activity.name if bot.activity else "Không có trạng thái"
     embed.add_field(name="Trạng thái", value=current_status, inline=True)
     await ctx.send(embed=embed)
 
+@bot.command(name='tro_giup')
+async def tro_giup(ctx):
+    """Thông tin chi tiết các lệnh và cách sử dụng"""
+    embed = discord.Embed(title="Chi tiết cách sử dụng các lệnh", color=0x00ff00)  
+    embed.add_field(name="Thông tin và tiện ích", value="!userinfo <@username>, !qr <Nhập text, url>, ")
+    embed.add_field(name="Giải trí và trò chơi", value="!waifu <sfw/nsfw> <neko, shinobu, kiss, poke...>, !chat <Nhập câu hỏi>, !") 
+    embed.add_field(name="Âm nhạc", value="!play <link nhạc only youtube>, !volume <0-100> ")
+    embed.add_field(name="Quản lí", value="!ban <@username>, !automod(lọc những từ cấm cấu hình trong file mod.json) ")
+    embed.add_field(name="kinh tế", value="!exp <@username>")
+    embed.add_field(name="Tiện ich nâng cao", value="!alarm <Thời gian vd: 23:99>")
+    await ctx.send(embed=embed)
 @bot.command(name='info')
 async def info(ctx):
     """2. Thông tin về bot"""
@@ -195,7 +259,7 @@ async def info(ctx):
     embed.add_field(name="ID", value=bot.user.id, inline=True)
     embed.add_field(name="Servers", value=len(bot.guilds), inline=True)
     embed.add_field(name="Users", value=len(bot.users), inline=True)
-    embed.add_field(name="Phiên bản", value="1.0.0", inline=True)
+    embed.add_field(name="Phiên bản", value="1.2.0", inline=True)
     embed.add_field(name="Prefix", value="!", inline=True)
     embed.add_field(name="Owner", value="@hoang_62070")
     embed.add_field(name="Owner", value="https://guns.lol/hoanqdev1z")
@@ -269,13 +333,11 @@ async def userinfo(ctx, member: discord.Member = None):
 async def math_calc(ctx, *, expression):
     """8. Máy tính toán học"""
     try:
-        # Chỉ cho phép các ký tự an toàn
         allowed_chars = set('0123456789+-*/().,^ ')
         if not all(c in allowed_chars for c in expression):
             await ctx.send("❌ Chỉ được sử dụng số và các phép toán cơ bản!")
             return
         
-        # Thay thế ^ bằng **
         expression = expression.replace('^', '**')
         result = eval(expression)
         await ctx.send(f"🧮 {expression} = {result}")
@@ -287,7 +349,6 @@ async def translate(ctx, target_lang, *, text):
     """9. Dịch văn bản"""
     
     
-    # Danh sách mã ngôn ngữ hỗ trợ
     valid_languages = {
         'vi': 'Vietnamese', 'en': 'English', 'fr': 'French', 'es': 'Spanish',
         'de': 'German', 'ja': 'Japanese', 'ko': 'Korean', 'zh-cn': 'Chinese (Simplified)',
@@ -299,15 +360,13 @@ async def translate(ctx, target_lang, *, text):
         return
     
     try:
-        # Dịch văn bản
         translator = GoogleTranslator(source='auto', target=target_lang.lower())
-        translated_text = translator.translate(text[:500])  # Giới hạn 500 ký tự
+        translated_text = translator.translate(text[:500])  
         
         if not translated_text:
             await ctx.send("❌ Không thể dịch văn bản này!")
             return
         
-        # Tạo embed
         embed = discord.Embed(title="🌐 Dịch văn bản", color=0x00b7eb)
         embed.add_field(name="Văn bản gốc", value=text[:100] + ("..." if len(text) > 100 else ""), inline=False)
         embed.add_field(name=f"Dịch sang {valid_languages[target_lang.lower()]}", value=translated_text[:100] + ("..." if len(translated_text) > 100 else ""), inline=False)
@@ -340,12 +399,10 @@ async def qr_code(ctx, *, text):
 @bot.command(name='shorten')
 async def shorten_url(ctx, url):
     """13. Rút gọn URL"""
-    # Kiểm tra URL hợp lệ
     if not is_url(url):
         await ctx.send("❌ URL không hợp lệ! Vui lòng nhập URL bắt đầu bằng http:// hoặc https://")
         return
 
-    # URL API TinyURL
     tinyurl_api = f"https://tinyurl.com/api-create.php?url={urllib.parse.quote(url)}"
 
     try:
@@ -477,9 +534,8 @@ async def hex_convert(ctx, action, *, text):
     except Exception:
         await ctx.send("❌ Không thể chuyển đổi!")
 
-# Thêm lệnh !vt
 @bot.command(name='vt')
-@commands.cooldown(1, 5, commands.BucketType.user)  # 1 lần/5 giây/người dùng
+@commands.cooldown(1, 5, commands.BucketType.user)
 async def virustotal(ctx, *, input: str = None):
     """Quét URL, file hash, hoặc file đính kèm bằng VirusTotal API v3"""
     if not os.getenv("VIRUSTOTAL_API_KEY"):
@@ -491,18 +547,18 @@ async def virustotal(ctx, *, input: str = None):
         "accept": "application/json"
     }
 
-    # Kiểm tra input và file đính kèm
+
     is_file = False
     if ctx.message.attachments:
         attachment = ctx.message.attachments[0]
-        if attachment.size > 32 * 1024 * 1024:  # 32MB
+        if attachment.size > 32 * 1024 * 1024:  
             await ctx.send("❌ Lỗi: File quá lớn! VirusTotal chỉ hỗ trợ file <32MB.")
             return
         is_file = True
     elif input:
-        # Kiểm tra URL hoặc hash
+
         url_pattern = re.compile(r'^(https?://)?([\w.-]+)\.([a-z]{2,})(/.*)?$')
-        hash_pattern = re.compile(r'^[a-fA-F0-9]{32}$|^[a-fA-F0-9]{40}$|^[a-fA-F0-9]{64}$')  # MD5, SHA1, SHA256
+        hash_pattern = re.compile(r'^[a-fA-F0-9]{32}$|^[a-fA-F0-9]{40}$|^[a-fA-F0-9]{64}$')  
         input = input.strip()
         if url_pattern.match(input):
             type = "url"
@@ -521,13 +577,13 @@ async def virustotal(ctx, *, input: str = None):
         await ctx.send("❌ Vui lòng cung cấp URL, hash, hoặc đính kèm file để quét!")
         return
 
-    # Retry logic: Thử tối đa 3 lần
+
     max_retries = 3
-    retry_delay = 5  # Giây
+    retry_delay = 5
     for attempt in range(max_retries):
         try:
             if is_file:
-                # Tải file từ Discord
+
                 async with aiohttp.ClientSession() as session:
                     async with session.get(attachment.url) as resp:
                         if resp.status != 200:
@@ -535,17 +591,17 @@ async def virustotal(ctx, *, input: str = None):
                             return
                         file_data = await resp.read()
                 
-                # Upload file lên VirusTotal
+
                 upload_endpoint = "https://www.virustotal.com/api/v3/files"
                 files = {"file": (attachment.filename, file_data)}
                 response = requests.post(upload_endpoint, headers=headers, files=files, timeout=10)
                 response.raise_for_status()
                 analysis_id = response.json().get("data", {}).get("id")
                 
-                # Chờ kết quả quét (tối đa 60 giây)
+
                 analysis_endpoint = f"https://www.virustotal.com/api/v3/analyses/{analysis_id}"
-                max_wait = 60  # Giây
-                wait_interval = 5  # Giây
+                max_wait = 60  
+                wait_interval = 5 
                 elapsed = 0
                 while elapsed < max_wait:
                     response = requests.get(analysis_endpoint, headers=headers, timeout=10)
@@ -560,7 +616,7 @@ async def virustotal(ctx, *, input: str = None):
                     await ctx.send("❌ Lỗi: Quét file không hoàn tất trong thời gian chờ (60 giây)! Vui lòng thử lại.")
                     return
                 
-                # Lấy kết quả file
+         
                 file_id = response.json().get("data", {}).get("attributes", {}).get("results", {}).get("sha256")
                 if not file_id:
                     await ctx.send("❌ Lỗi: Không lấy được SHA256 của file! Vui lòng thử lại.")
@@ -569,8 +625,7 @@ async def virustotal(ctx, *, input: str = None):
                 response = requests.get(endpoint, headers=headers, timeout=10)
                 response.raise_for_status()
                 type = "file"
-            
-            # Gọi API VirusTotal
+  
             response = requests.get(endpoint, headers=headers, timeout=10)
             response.raise_for_status()
             data = response.json().get("data", {}).get("attributes", {})
@@ -579,7 +634,7 @@ async def virustotal(ctx, *, input: str = None):
                 await ctx.send("❌ Không tìm thấy dữ liệu từ VirusTotal! Vui lòng thử lại.")
                 return
 
-            # Tạo embed
+    
             embed = discord.Embed(title="🔍 Kết Quả VirusTotal", color=0x00b7eb)
             embed.add_field(name="Input", value=(attachment.filename if is_file else input)[:200] + ("..." if len(attachment.filename if is_file else input) > 200 else ""), inline=False)
             
@@ -590,7 +645,7 @@ async def virustotal(ctx, *, input: str = None):
             
             if type == "url":
                 embed.add_field(name="Lượt Bình Chọn", value=f"An toàn: {data.get('total_votes', {}).get('harmless', 0)} | Độc hại: {data.get('total_votes', {}).get('malicious', 0)}", inline=False)
-            else:  # file
+            else:  
                 embed.add_field(name="Tên File", value=", ".join(data.get("names", ["Không xác định"]))[:200], inline=False)
             
             embed.set_footer(text="Nguồn: VirusTotal | Cập nhật: " + datetime.datetime.now().strftime("%d/%m/%Y %H:%M"))
@@ -600,7 +655,7 @@ async def virustotal(ctx, *, input: str = None):
         except requests.exceptions.HTTPError as e:
             if response.status_code == 429:
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay)  # Chờ trước khi thử lại
+                    await asyncio.sleep(retry_delay) 
                     continue
                 await ctx.send("❌ Quá nhiều yêu cầu đến VirusTotal API! Vui lòng thử lại sau vài giây.")
                 return
@@ -627,10 +682,9 @@ async def on_command_error(ctx, error):
 
 # Thêm lệnh !waifu
 @bot.command(name='waifu')
-@commands.cooldown(1, 5, commands.BucketType.user)  # 1 lần/5 giây/người dùng
+@commands.cooldown(1, 5, commands.BucketType.user) 
 async def waifu(ctx, type: str = "sfw", category: str = None):
     """Lấy hình ảnh anime ngẫu nhiên từ waifu.pics (SFW hoặc NSFW)"""
-    # Danh sách danh mục từ https://waifu.pics/docs
     sfw_categories = [
         "waifu", "neko", "shinobu", "megumin", "bully", "cuddle",
         "cry", "hug", "awoo", "kiss", "lick", "pat", "smug",
@@ -640,23 +694,19 @@ async def waifu(ctx, type: str = "sfw", category: str = None):
     ]
     nsfw_categories = ["waifu", "neko", "trap", "blowjob"]
 
-    # Xác định loại (sfw hoặc nsfw)
     type = type.lower()
     if type not in ["sfw", "nsfw"]:
         await ctx.send("❌ Loại không hợp lệ! Chọn 'sfw' hoặc 'nsfw'.")
         return
 
-    # Kiểm tra kênh NSFW nếu type là nsfw
     if type == "nsfw" and not ctx.channel.is_nsfw():
         await ctx.send("❌ Nội dung NSFW chỉ được sử dụng trong kênh NSFW!")
         return
 
-    # Chọn danh sách danh mục dựa trên type
     categories = sfw_categories if type == "sfw" else nsfw_categories
 
-    # Nếu không có danh mục, chọn ngẫu nhiên từ danh sách
     if category is None:
-        category = "waifu"  # Mặc định
+        category = "waifu" 
         category_display = f"{type}/waifu (ngẫu nhiên)"
     else:
         category = category.lower()
@@ -665,17 +715,14 @@ async def waifu(ctx, type: str = "sfw", category: str = None):
             return
         category_display = f"{type}/{category}"
 
-    # Tạo URL endpoint
     endpoint = f"https://api.waifu.pics/{type}/{category}"
 
-    # Retry logic: Thử tối đa 3 lần
     max_retries = 3
-    retry_delay = 5  # Giây
+    retry_delay = 5 
     for attempt in range(max_retries):
         try:
-            # Gọi API waifu.pics
             response = requests.get(endpoint, timeout=10)
-            response.raise_for_status()  # Kiểm tra lỗi HTTP
+            response.raise_for_status() 
             data = response.json()
             image_url = data.get("url")
 
@@ -683,7 +730,6 @@ async def waifu(ctx, type: str = "sfw", category: str = None):
                 await ctx.send("❌ Lỗi: Không lấy được hình ảnh từ API!")
                 return
 
-            # Tạo embed
             embed = discord.Embed(title="🎨 Hình Ảnh Anime", color=0x00b7eb)
             embed.set_image(url=image_url)
             embed.add_field(name="Loại/Danh Mục", value=category_display.capitalize(), inline=False)
@@ -694,7 +740,7 @@ async def waifu(ctx, type: str = "sfw", category: str = None):
         except requests.exceptions.HTTPError as e:
             if response.status_code == 429:
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay)  # Chờ trước khi thử lại
+                    await asyncio.sleep(retry_delay) 
                     continue
                 await ctx.send("❌ Quá nhiều yêu cầu đến waifu.pics API! Vui lòng thử lại sau vài giây.")
                 return
@@ -713,37 +759,32 @@ async def on_command_error(ctx, error):
         raise error
 
 @bot.command(name='chat')
-@commands.cooldown(1, 5, commands.BucketType.user)  # 1 lần/5 giây/người dùng
+@commands.cooldown(1, 5, commands.BucketType.user)  
 async def chat_gemini(ctx, *, query):
     """51. Trò chuyện với Gemini"""
     if not os.getenv("GEMINI_API_KEY"):
         await ctx.send("❌ Lỗi: Thiếu API key Gemini! Vui lòng liên hệ admin.")
         return
-
-    # Retry logic: Thử tối đa 3 lần
-    max_retries = 3
-    retry_delay = 5  # Giây
+    max_retries = 2
+    retry_delay = 5  
     for attempt in range(max_retries):
         try:
-            # Gọi Gemini API
             response = model.generate_content(
                 contents=query,
                 generation_config=GenerationConfig(
-                    max_output_tokens=150,
+                    max_output_tokens=1500,
                     temperature=0.7
                 )
             )
             answer_en = response.text.strip()
 
-            # Dịch sang tiếng Việt
             translator = GoogleTranslator(source='en', target='vi')
-            answer_vi = translator.translate(answer_en[:500])  # Giới hạn 500 ký tự
+            answer_vi = translator.translate(answer_en[:1000])  
 
-            # Tạo embed
             embed = discord.Embed(title="💬 Trò Chuyện với Gemini", color=0x00b7eb)
             embed.add_field(name="Câu Hỏi", value=query[:200] + ("..." if len(query) > 200 else ""), inline=False)
-            embed.add_field(name="Trả Lời (Tiếng Anh)", value=answer_en[:200] + ("..." if len(answer_en) > 200 else ""), inline=False)
-            embed.add_field(name="Trả Lời (Tiếng Việt)", value=answer_vi[:200] + ("..." if len(answer_vi) > 200 else ""), inline=False)
+            embed.add_field(name="Trả Lời (Tiếng Anh)", value=answer_en[:2000] + ("..." if len(answer_en) > 2000 else ""), inline=False)
+            embed.add_field(name="Trả Lời (Tiếng Việt)", value=answer_vi[:2000] + ("..." if len(answer_vi) > 2000 else ""), inline=False)
             embed.set_footer(text="Nguồn: Google Gemini | Cập nhật: " + datetime.datetime.now().strftime("%d/%m/%Y %H:%M"))
             await ctx.send(embed=embed)
             return
@@ -751,7 +792,7 @@ async def chat_gemini(ctx, *, query):
         except Exception as e:
             if "rate limit" in str(e).lower() or "429" in str(e).lower():
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay)  # Chờ trước khi thử lại
+                    await asyncio.sleep(retry_delay)  
                     continue
                 await ctx.send("❌ Quá nhiều yêu cầu đến Gemini API! Vui lòng thử lại sau vài giây.")
                 return
@@ -770,12 +811,11 @@ async def on_command_error(ctx, error):
 async def joke(ctx):
     """21. Kể chuyện cười"""
     try:
-        # Gọi API để lấy câu chuyện cười ngẫu nhiên (safe-mode để tránh nội dung không phù hợp)
         response = requests.get("https://v2.jokeapi.dev/joke/Any?safe-mode&type=single&lang=en", timeout=5)
         response.raise_for_status()
         joke_data = response.json()
 
-        # Lấy câu chuyện cười
+
         if joke_data["type"] == "single":
             joke_en = joke_data.get("joke", "Không có câu chuyện cười nào được trả về!")
             setup_en = None
@@ -785,16 +825,15 @@ async def joke(ctx):
             delivery_en = joke_data.get("delivery", "Không có phần kết thúc!")
             joke_en = f"{setup_en} {delivery_en}"
 
-        # Dịch sang tiếng Việt
+
         translator = GoogleTranslator(source='en', target='vi')
         if setup_en and delivery_en:
-            setup_vi = translator.translate(setup_en[:500])  # Giới hạn 500 ký tự
+            setup_vi = translator.translate(setup_en[:500]) 
             delivery_vi = translator.translate(delivery_en[:500])
             joke_vi = f"{setup_vi} {delivery_vi}"
         else:
             joke_vi = translator.translate(joke_en[:500])
 
-        # Tạo embed
         embed = discord.Embed(title="😂 Câu Chuyện Cười", color=0xff4500)
         if setup_en and delivery_en:
             embed.add_field(name="Tiếng Anh (Setup)", value=setup_en[:200] + ("..." if len(setup_en) > 200 else ""), inline=False)
@@ -815,17 +854,12 @@ async def joke(ctx):
 async def random_fact(ctx):
     """22. Sự thật thú vị"""
     try:
-        # Gọi API để lấy sự thật ngẫu nhiên
         response = requests.get("https://uselessfacts.jsph.pl/api/v2/facts/random", timeout=5)
         response.raise_for_status()
         fact_data = response.json()
         fact_en = fact_data.get("text", "Không có sự thật nào được trả về!")
-
-        # Dịch sang tiếng Việt
         translator = GoogleTranslator(source='en', target='vi')
-        fact_vi = translator.translate(fact_en[:500])  # Giới hạn 500 ký tự để dịch nhanh
-
-        # Tạo embed
+        fact_vi = translator.translate(fact_en[:500])  
         embed = discord.Embed(title="🧠 Sự Thật Thú Vị", color=0x00b7eb)
         embed.add_field(name="Tiếng Anh", value=fact_en[:200] + ("..." if len(fact_en) > 200 else ""), inline=False)
         embed.add_field(name="Tiếng Việt", value=fact_vi[:200] + ("..." if len(fact_vi) > 200 else ""), inline=False)
@@ -841,18 +875,17 @@ async def random_fact(ctx):
 async def inspirational_quote(ctx):
     """23. Câu nói truyền cảm hứng"""
     try:
-        # Gọi API để lấy câu trích dẫn ngẫu nhiên
         response = requests.get("https://api.quotable.io/random", timeout=5)
         response.raise_for_status()
         quote_data = response.json()
         quote_en = quote_data.get("content", "Không có câu trích dẫn nào được trả về!")
         author = quote_data.get("author", "Không rõ tác giả")
 
-        # Dịch sang tiếng Việt
+
         translator = GoogleTranslator(source='en', target='vi')
         quote_vi = translator.translate(quote_en[:500])  # Giới hạn 500 ký tự để dịch nhanh
 
-        # Tạo embed
+
         embed = discord.Embed(title="✨ Câu Trích Dẫn Truyền Cảm Hứng", color=0xffd700)
         embed.add_field(name="Tiếng Anh", value=f"{quote_en[:200]}..." if len(quote_en) > 200 else quote_en, inline=False)
         embed.add_field(name="Tiếng Việt", value=f"{quote_vi[:200]}..." if len(quote_vi) > 200 else quote_vi, inline=False)
@@ -920,7 +953,7 @@ async def rock_paper_scissors(ctx, choice):
         await ctx.send("❌ Chọn: rock/paper/scissors hoặc kéo/búa/bao")
         return
     
-    # Chuẩn hóa lựa chọn
+
     choice_map = {'kéo': 'scissors', 'búa': 'rock', 'bao': 'paper'}
     user_choice = choice_map.get(choice.lower(), choice.lower())
     
@@ -1106,14 +1139,82 @@ async def random_story(ctx):
     ]
     await ctx.send(random.choice(stories))
 
+
 @bot.command(name='meme')
+@commands.cooldown(1, 5, commands.BucketType.user)  
 async def meme(ctx):
     """34. Meme ngẫu nhiên"""
-    memes = [
-        "```\n  ∩───∩\n  │   │\n  │ ◕ │  <- Khi code chạy lần đầu\n  │   │\n  ∩───∩\n```",
-        "```\n┌─────────────────┐\n│ 99 little bugs  │\n│ in the code     │\n│ 99 little bugs  │\n│ take one down   │\n│ patch it around │\n│ 117 little bugs │\n│ in the code     │\n└─────────────────┘\n```"
-    ]
-    await ctx.send(random.choice(memes))
+    imgflip_api_url = "https://api.imgflip.com/get_memes"
+    
+
+    max_retries = 2
+    retry_delay = 5  
+    for attempt in range(max_retries):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(imgflip_api_url, timeout=10) as response:
+                    if response.status != 200:
+                        if response.status == 429 and attempt < max_retries - 1:
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        await ctx.send(f"❌ Lỗi khi gọi Imgflip API: HTTP {response.status}")
+                        return
+                    data = await response.json()
+
+            if not data.get("success") or not data.get("data", {}).get("memes"):
+                await ctx.send("❌ Không lấy được meme từ Imgflip! Vui lòng thử lại.")
+                return
+
+
+            memes = data["data"]["memes"]
+            
+
+            conn = sqlite3.connect("meme_history.db")
+            c = conn.cursor()
+            
+
+            c.execute("SELECT meme_id FROM memes WHERE guild_id = ?", (ctx.guild.id,))
+            used_meme_ids = {row[0] for row in c.fetchall()}
+            
+
+            available_memes = [meme for meme in memes if meme["id"] not in used_meme_ids]
+            
+
+            if not available_memes:
+                c.execute("DELETE FROM memes WHERE guild_id = ?", (ctx.guild.id,))
+                conn.commit()
+                available_memes = memes
+            
+
+            selected_meme = random.choice(available_memes)
+            meme_id = selected_meme["id"]
+            meme_name = selected_meme["name"]
+            meme_url = selected_meme["url"]
+            
+
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            c.execute("INSERT INTO memes (meme_id, guild_id, timestamp) VALUES (?, ?, ?)",
+                     (meme_id, ctx.guild.id, timestamp))
+            conn.commit()
+            conn.close()
+            
+
+            embed = discord.Embed(title=meme_name, color=0x00ff00)
+            embed.set_image(url=meme_url)
+            embed.add_field(name="Nguồn", value="[Imgflip](https://imgflip.com)", inline=True)
+            embed.set_footer(text=f"Meme từ Imgflip API | Cập nhật: {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}")
+            await ctx.send(embed=embed)
+            return
+
+        except aiohttp.ClientError as e:
+            if attempt < max_retries - 1:
+                await asyncio.sleep(retry_delay)
+                continue
+            await ctx.send(f"❌ Lỗi khi gọi Imgflip API: {str(e)}")
+            return
+        except Exception as e:
+            await ctx.send(f"❌ Lỗi khi xử lý yêu cầu: {str(e)}")
+            return
 
 @bot.command(name='gif')
 async def gif_search(ctx, *, query):
@@ -1123,7 +1224,6 @@ async def gif_search(ctx, *, query):
         await ctx.send("❌ Lỗi: Thiếu API key cho Tenor. Vui lòng liên hệ admin!")
         return
 
-    # URL API Tenor với API key
     url = f"https://tenor.googleapis.com/v2/search?q={urllib.parse.quote(query)}&key={api_key}&limit=10&content_filter=high"
     
     try:
@@ -1135,12 +1235,10 @@ async def gif_search(ctx, *, query):
             await ctx.send(f"🎬 Không tìm thấy GIF nào cho '{query}'!")
             return
 
-        # Chọn ngẫu nhiên một GIF
         gif = random.choice(data["results"])
         gif_url = gif["media_formats"]["gif"]["url"]
         gif_title = gif.get("title", "GIF") or query
 
-        # Tạo embed
         embed = discord.Embed(title=f"🎬 GIF: {gif_title[:50]}", color=0xff69b4)
         embed.set_image(url=gif_url)
         embed.set_footer(text="Nguồn: Tenor | Cập nhật: " + datetime.datetime.now().strftime("%d/%m/%Y %H:%M"))
@@ -1216,9 +1314,7 @@ async def fortune_cookie(ctx):
     fortunes = [
         "🥠 Ngày mai sẽ có tin tốt đến với bạn",
         "🥠 Hãy tin vào khả năng của bản thân",
-        "🥠 Một cơ hội mới đang chờ đợi",
-        "🥠 Bug hôm nay sẽ được fix thành công",
-        "🥠 Code của bạn sẽ chạy mượt mà"
+        "🥠 Một cơ hội mới đang chờ đợi"
     ]
     await ctx.send(random.choice(fortunes))
 
@@ -1235,25 +1331,24 @@ async def play_music(ctx, *, url):
 
     channel = ctx.author.voice.channel
     try:
-        # Kết nối voice channel nếu chưa kết nối
         if not ctx.guild.voice_client:
             await channel.connect()
         
         voice_client = ctx.guild.voice_client
 
-        # Khởi tạo hàng đợi nếu chưa có
+
         if ctx.guild.id not in music_queues:
             music_queues[ctx.guild.id] = queue.Queue()
 
-        # Thêm bài hát vào hàng đợi
+
         music_queues[ctx.guild.id].put(url)
 
-        # Nếu đang phát nhạc, thông báo thêm vào hàng đợi
+
         if voice_client.is_playing():
             await ctx.send(f"🎵 Đã thêm vào hàng đợi: {url}")
             return
 
-        # Phát nhạc từ hàng đợi
+
         async def play_next():
             if music_queues[ctx.guild.id].empty():
                 await voice_client.disconnect()
@@ -1293,7 +1388,7 @@ async def skip_music(ctx):
     """43. Bỏ qua bài hát"""
     voice_client = ctx.guild.voice_client
     if voice_client and voice_client.is_playing():
-        voice_client.stop()  # Dừng bài hiện tại, after callback sẽ phát bài tiếp theo
+        voice_client.stop()  
         await ctx.send("⏭️ Đã bỏ qua bài hát")
     else:
         await ctx.send("❌ Không có nhạc đang phát!")
@@ -1331,10 +1426,72 @@ async def set_volume(ctx, volume: int):
     voice_client.source.volume = volume / 100
     await ctx.send(f"🔊 Đã đặt âm lượng: {volume}%")
 
+
 @bot.command(name='lyrics')
+@commands.cooldown(1, 5, commands.BucketType.user)  
 async def get_lyrics(ctx, *, song):
     """46. Lời bài hát"""
-    await ctx.send(f"🎤 Tìm lời bài hát '{song}' (Cần API để hoạt động)")
+    try:
+        search_term = song.replace(" ", "%20")
+        search_url = f"http://api.chartlyrics.com/apiv1.asmx/SearchLyricDirect?artist={search_term}&song={search_term}"
+
+
+        max_retries = 1
+        retry_delay = 5  
+        for attempt in range(max_retries):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(search_url, timeout=10) as response:
+                        if response.status != 200:
+                            if response.status == 429 and attempt < max_retries - 1:
+                                await asyncio.sleep(retry_delay)
+                                continue
+                            await ctx.send(f"❌ Lỗi khi gọi ChartLyrics API: HTTP {response.status}")
+                            return
+                        xml_data = await response.text()
+
+                root = ET.fromstring(xml_data)
+                namespace = "{http://api.chartlyrics.com/}"
+                lyric = root.find(f".//{namespace}Lyric").text if root.find(f".//{namespace}Lyric") is not None else None
+                title = root.find(f".//{namespace}LyricSong").text if root.find(f".//{namespace}LyricSong") is not None else song
+                artist = root.find(f".//{namespace}LyricArtist").text if root.find(f".//{namespace}LyricArtist") is not None else "Không xác định"
+                lyric_id = root.find(f".//{namespace}LyricId").text if root.find(f".//{namespace}LyricId") is not None else "0"
+
+                if not lyric or lyric_id == "0":
+                    await ctx.send(f"❌ Không tìm thấy lời bài hát cho '{song}' trên ChartLyrics! Vui lòng thử tên khác.")
+                    return
+
+                lyrics_short = lyric[:500] + ("..." if len(lyric) > 500 else "")
+
+                embed = discord.Embed(title="🎤 Lời Bài Hát", color=0x00b7eb)
+                embed.add_field(name="Bài Hát", value=title, inline=True)
+                embed.add_field(name="Nghệ Sĩ", value=artist, inline=True)
+                embed.add_field(name="Lời Bài Hát", value=lyrics_short, inline=False)
+                embed.add_field(name="Nguồn", value="ChartLyrics", inline=False)
+                embed.set_footer(text=f"Nguồn: ChartLyrics | Cập nhật: {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}")
+                await ctx.send(embed=embed)
+                return
+
+            except aiohttp.ClientError as e:
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)
+                    continue
+                await ctx.send(f"❌ Lỗi khi gọi ChartLyrics API: {str(e)}")
+                return
+            except ET.ParseError:
+                await ctx.send(f"❌ Lỗi: Không thể phân tích dữ liệu từ ChartLyrics! Vui lòng thử lại.")
+                return
+
+    except Exception as e:
+        await ctx.send(f"❌ Lỗi khi xử lý yêu cầu: {str(e)}")
+        return
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandOnCooldown):
+        await ctx.send(f"❌ Lệnh đang trong thời gian chờ! Thử lại sau {error.retry_after:.2f} giây.")
+    else:
+        raise error
 
 @bot.command(name='spotify')
 async def spotify_info(ctx, member: discord.Member = None):
@@ -1456,7 +1613,7 @@ async def clear_messages(ctx, amount: int = 5):
 @commands.has_permissions(manage_channels=True)
 async def slowmode(ctx, seconds: int):
     """57. Chế độ chậm"""
-    if seconds > 21600:  # 6 hours max
+    if seconds > 21600:  
         seconds = 21600
     
     try:
@@ -1572,16 +1729,63 @@ async def simple_vote(ctx, *, question):
     except discord.HTTPException:
         pass
 
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        await bot.process_commands(message)
+        return
+    
+    conn = sqlite3.connect("automod_status.db")
+    c = conn.cursor()
+    c.execute("SELECT status FROM automod WHERE guild_id = ?", (message.guild.id,))
+    result = c.fetchone()
+    automod_status = result[0] if result else "off"
+    conn.close()
+    
+    if automod_status == "on":
+        content_lower = message.content.lower()
+        for word in FORBIDDEN_WORDS:
+            if word in content_lower:
+                await message.delete()
+                await message.channel.send(f"🛡️ Tin nhắn của {message.author.mention} bị xóa do chứa từ cấm: `{word}`.")
+                await log_event(message.guild, f"Automod: Tin nhắn của {message.author} ({message.author.id}) bị xóa do chứa từ cấm: {word}")
+                return
+        
+        if LINK_PATTERN.search(message.content):
+            await message.delete()
+            await message.channel.send(f"🛡️ Tin nhắn của {message.author.mention} bị xóa do chứa link.")
+            await log_event(message.guild, f"Automod: Tin nhắn của {message.author} ({message.author.id}) bị xóa do chứa link: {message.content[:100]}...")
+            return
+    
+    await bot.process_commands(message)
+
 @bot.command(name='automod')
 @commands.has_permissions(administrator=True)
+@commands.cooldown(1, 5, commands.BucketType.user)
 async def automod(ctx, action):
     """65. Auto moderation"""
-    if action.lower() == 'on':
-        await ctx.send("🛡️ Đã bật auto moderation")
-    elif action.lower() == 'off':
-        await ctx.send("🛡️ Đã tắt auto moderation")
-    else:
+    action = action.lower()
+    if action not in ["on", "off"]:
         await ctx.send("❌ Sử dụng: !automod on/off")
+        return
+    
+    conn = sqlite3.connect("automod_status.db")
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO automod (guild_id, status) VALUES (?, ?)", 
+              (ctx.guild.id, action))
+    conn.commit()
+    conn.close()
+    embed = discord.Embed(
+        title="🛡️ Auto Moderation",
+        description=f"Automod đã được **{'bật' if action == 'on' else 'tắt'}**.",
+        color=0x34495e,
+        timestamp=datetime.datetime.now()
+    )
+    embed.add_field(name="Server", value=ctx.guild.name, inline=True)
+    embed.add_field(name="Người Thực Hiện", value=ctx.author.mention, inline=True)
+    embed.set_footer(text=f"Cập nhật: {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    await ctx.send(embed=embed)
+    await log_event(ctx.guild, f"Automod: {'Bật' if action == 'on' else 'Tắt'} bởi {ctx.author} ({ctx.author.id}).")
 
 # =============================================================================
 # LỆNH KINH TẾ VÀ LEVELING (66-80)
@@ -1647,7 +1851,7 @@ async def pay_user(ctx, member: discord.Member, amount: int):
 async def shop(ctx):
     """69. Cửa hàng"""
     embed = discord.Embed(title="🛒 Cửa hàng", color=0x9b59b6)
-    embed.add_field(name="1. Color Role", value="1000 coins", inline=True)
+    embed.add_field(name="1. Nole da den", value="1000 coins", inline=True)
     embed.add_field(name="2. Custom Status", value="500 coins", inline=True)
     embed.add_field(name="3. Extra EXP", value="200 coins", inline=True)
     embed.add_field(name="4. Profile Badge", value="800 coins", inline=True)
@@ -1658,7 +1862,7 @@ async def shop(ctx):
 async def buy_item(ctx, item_id: int):
     """70. Mua vật phẩm"""
     items = {
-        1: {"name": "Color Role", "price": 1000},
+        1: {"name": "Nole da den", "price": 1000},
         2: {"name": "Custom Status", "price": 500},
         3: {"name": "Extra EXP", "price": 200},
         4: {"name": "Profile Badge", "price": 800}
@@ -1696,7 +1900,7 @@ async def gamble(ctx, amount: int):
         await ctx.send("❌ Bạn không đủ tiền!")
         return
     
-    win_chance = 0.45  # 45% cơ hội thắng
+    win_chance = 0.45  
     won = random.random() < win_chance
     
     if won:
@@ -1715,7 +1919,9 @@ async def work(ctx):
         {"name": "Code reviewer", "pay": (50, 150)},
         {"name": "Bug fixer", "pay": (30, 100)},
         {"name": "Database admin", "pay": (70, 200)},
-        {"name": "Discord moderator", "pay": (40, 120)}
+        {"name": "Discord moderator", "pay": (40, 120)},
+        {"name": "Câu Cá", "pay": (20, 100)},
+        {"name": "Anh Thợ Sửa Ống Nước May Mắn", "pay": (100, 500)}
     ]
     
     job = random.choice(jobs)
@@ -1725,7 +1931,6 @@ async def work(ctx):
     new_coins = user_data[3] + earnings
     new_exp = user_data[2] + 10
     
-    # Level up check
     new_level = user_data[1]
     exp_needed = new_level * 100
     levelup_msg = ""
@@ -1890,7 +2095,6 @@ async def achievements(ctx):
 async def set_reminder(ctx, time_str, *, message):
     """81. Đặt nhắc nhở"""
     try:
-        # Parse time (simplified - only minutes)
         if time_str.endswith('m'):
             minutes = int(time_str[:-1])
         elif time_str.endswith('h'):
@@ -1898,7 +2102,7 @@ async def set_reminder(ctx, time_str, *, message):
         else:
             minutes = int(time_str)
         
-        if minutes > 10080:  # Max 1 week
+        if minutes > 10080: 
             await ctx.send("❌ Thời gian tối đa là 1 tuần!")
             return
         
@@ -1943,7 +2147,6 @@ async def check_reminders():
 @bot.command(name='todo')
 async def todo_list(ctx, action="list", *, item=""):
     """82. Danh sách việc cần làm"""
-    # Simplified todo - using in-memory storage
     if not hasattr(bot, 'todos'):
         bot.todos = {}
     
@@ -1980,7 +2183,6 @@ async def notes(ctx, action="list", note_id: int = 0, *, content=""):
     user_id = ctx.author.id
     
     if action.lower() == "add" and content:
-        # Get next note ID
         c.execute("SELECT MAX(note_id) FROM notes WHERE user_id = ?", (user_id,))
         max_id = c.fetchone()[0]
         new_id = (max_id or 0) + 1
@@ -2007,7 +2209,7 @@ async def notes(ctx, action="list", note_id: int = 0, *, content=""):
             await ctx.send("📝 Chưa có ghi chú nào!")
         else:
             embed = discord.Embed(title="📝 Ghi chú của bạn", color=0x9b59b6)
-            for note in notes[:10]:  # Limit to 10 notes
+            for note in notes[:10]: 
                 created = datetime.datetime.fromisoformat(note[2]).strftime("%d/%m/%Y")
                 embed.add_field(name=f"#{note[0]} ({created})", value=note[1][:100], inline=False)
             await ctx.send(embed=embed)
@@ -2020,10 +2222,7 @@ async def notes(ctx, action="list", note_id: int = 0, *, content=""):
 async def calculator(ctx, *, expression):
     """84. Máy tính nâng cao"""
     try:
-        # Thêm các hàm toán học
         import math as m
-        
-        # Thay thế các hàm
         expression = expression.replace('sin', 'm.sin')
         expression = expression.replace('cos', 'm.cos')
         expression = expression.replace('tan', 'm.tan')
@@ -2044,7 +2243,6 @@ async def calculator(ctx, *, expression):
 @bot.command(name='convert')
 async def unit_converter(ctx, value: float, from_unit, to_unit):
     """85. Chuyển đổi đơn vị"""
-    # Temperature conversions
     if from_unit.lower() == 'c' and to_unit.lower() == 'f':
         result = (value * 9/5) + 32
         await ctx.send(f"🌡️ {value}°C = {result}°F")
@@ -2052,7 +2250,6 @@ async def unit_converter(ctx, value: float, from_unit, to_unit):
         result = (value - 32) * 5/9
         await ctx.send(f"🌡️ {value}°F = {result}°C")
     
-    # Length conversions
     elif from_unit.lower() == 'm' and to_unit.lower() == 'ft':
         result = value * 3.28084
         await ctx.send(f"📏 {value}m = {result}ft")
@@ -2060,7 +2257,6 @@ async def unit_converter(ctx, value: float, from_unit, to_unit):
         result = value / 3.28084
         await ctx.send(f"📏 {value}ft = {result}m")
     
-    # Weight conversions
     elif from_unit.lower() == 'kg' and to_unit.lower() == 'lb':
         result = value * 2.20462
         await ctx.send(f"⚖️ {value}kg = {result}lb")
@@ -2096,12 +2292,11 @@ async def latest_news(ctx, category="general"):
         await ctx.send(f"❌ Danh mục không hợp lệ! Chọn một trong: {', '.join(valid_categories)}")
         return
 
-    # URL API
     url = f"https://newsapi.org/v2/top-headlines?category={category.lower()}&language=en&apiKey={api_key}"
     
     try:
         response = requests.get(url, timeout=5)
-        response.raise_for_status()  # Kiểm tra lỗi HTTP
+        response.raise_for_status()  
         data = response.json()
         
         if data["status"] != "ok" or not data.get("articles"):
@@ -2220,7 +2415,6 @@ async def set_alarm(ctx, time_str):
         
         await ctx.send(f"⏰ Báo thức đã đặt lúc {time_str}!")
         
-        # Simplified - just show message for alarms within 1 hour
         seconds_until = (alarm_time - now).total_seconds()
         if seconds_until < 3600:
             await asyncio.sleep(seconds_until)
@@ -2297,7 +2491,6 @@ async def analyze_user(ctx, member: discord.Member = None):
     
     embed = discord.Embed(title=f"🔍 Phân tích {member.display_name}", color=0x9b59b6)
     
-    # Activity level based on level and exp
     total_activity = user_data[1] * 100 + user_data[2]
     if total_activity < 200:
         activity_level = "Mới tham gia"
@@ -2356,10 +2549,18 @@ async def ascii_art(ctx, *, text):
 async def log_command(ctx, action="view"):
     """Lệnh log cho admin"""
     if action.lower() == "view":
-        embed = discord.Embed(title="📋 Log hệ thống", color=0x34495e)
-        embed.add_field(name="Trạng thái", value="Đang hoạt động", inline=True)
-        embed.add_field(name="Lỗi gần đây", value="Không có", inline=True)
+        try:
+            with open("server_log.txt", "r", encoding="utf-8") as f:
+                logs = f.readlines()[-5:]  
+                log_content = "\n".join(logs) if logs else "Không có log nào."
+        except Exception as e:
+            log_content = f"Lỗi khi đọc log: {str(e)}"
+        
+        embed = discord.Embed(title="📋 Log Hệ Thống", color=0x34495e, timestamp=datetime.datetime.now())
+        embed.add_field(name="Trạng Thái", value="Đang hoạt động", inline=True)
+        embed.add_field(name="Log Gần Đây", value=log_content[:1000], inline=False) 
         await ctx.send(embed=embed)
+        await log_event(ctx.guild, f"Lệnh log view bởi {ctx.author} ({ctx.author.id}).")
     else:
         await ctx.send("❌ Sử dụng: !log view")
 
@@ -2398,47 +2599,64 @@ async def on_message(message):
     if message.author.bot:
         return
     
-    # Auto-moderation (simple)
     if message.guild:
-        bad_words = ['spam', 'hack', 'cheat', 'Lồn', 'cặc', 'ditmemay', 'https:']  # Thêm từ cấm tùy ý
-        if any(word in message.content.lower() for word in bad_words):
-            try:
-                await message.delete()
-                await message.channel.send(f"⚠️ {message.author.mention}, tin nhắn của bạn chứa nội dung không phù hợp!", delete_after=5)
-            except discord.Forbidden:
-                pass
+        conn = sqlite3.connect("automod_status.db")
+        c = conn.cursor()
+        c.execute("SELECT status FROM automod WHERE guild_id = ?", (message.guild.id,))
+        result = c.fetchone()
+        automod_status = result[0] if result else "off"
+        conn.close()
+        
+        if automod_status == "on":
+            content_lower = message.content.lower()
+            for word in FORBIDDEN_WORDS:
+                if word in content_lower:
+                    try:
+                        await message.delete()
+                        await message.channel.send(f"⚠️ {message.author.mention}, tin nhắn của bạn chứa từ cấm: `{word}`!", delete_after=5)
+                        await log_event(message.guild, f"Automod: Tin nhắn của {message.author} ({message.author.id}) bị xóa do chứa từ cấm: {word}")
+                    except discord.Forbidden:
+                        pass
+                    return  
+            
+
+            if LINK_PATTERN.search(message.content):
+                try:
+                    await message.delete()
+                    await message.channel.send(f"⚠️ {message.author.mention}, tin nhắn của bạn chứa link không phù hợp!", delete_after=5)
+                    await log_event(message.guild, f"Automod: Tin nhắn của {message.author} ({message.author.id}) bị xóa do chứa link: {message.content[:100]}...")
+                except discord.Forbidden:
+                    pass
+                return 
     
-    # Random EXP gain (giảm tần suất để tránh spam)
-    if random.randint(1, 20) == 1:  # 5% chance thay vì 10%
+
+    if random.randint(1, 20) == 1: 
         user_data = get_user_data(message.author.id)
-        exp_gain = random.randint(1, 3)  # Giảm EXP gain
+        exp_gain = random.randint(1, 3)  
         new_exp = user_data[2] + exp_gain
         new_level = user_data[1]
         
-        # Check level up
+
         exp_needed = new_level * 100
         levelup_msg = ""
         if new_exp >= exp_needed:
             new_level += 1
-            new_exp = new_exp - exp_needed  # Giữ lại EXP thừa
+            new_exp = new_exp - exp_needed  
             levelup_msg = f"🎉 Chúc mừng {message.author.mention}! Bạn đã lên level {new_level}!"
         
         update_user_data(message.author.id, level=new_level, exp=new_exp)
-        
-        # Chỉ thông báo level up, không thông báo EXP gain để tránh spam
+
         if levelup_msg:
             embed = discord.Embed(title="🎊 Level Up!", description=levelup_msg, color=0x00ff00)
             embed.add_field(name="Level mới", value=new_level, inline=True)
             embed.add_field(name="EXP", value=f"{new_exp}/{new_level * 100}", inline=True)
             await message.channel.send(embed=embed, delete_after=10)
-    
-    # Process commands after handling EXP
+
     await bot.process_commands(message)
 
 @bot.event
 async def on_member_join(member):
     """Chào mừng thành viên mới"""
-    # Tìm kênh welcome (có thể tùy chỉnh)
     welcome_channel = discord.utils.get(member.guild.channels, name='welcome')
     if not welcome_channel:
         welcome_channel = discord.utils.get(member.guild.channels, name='general')
@@ -2463,7 +2681,7 @@ async def on_member_join(member):
 @bot.event
 async def on_member_remove(member):
     """Thông báo khi thành viên rời khỏi server"""
-    # Tìm kênh log hoặc general
+
     log_channel = discord.utils.get(member.guild.channels, name='log')
     if not log_channel:
         log_channel = discord.utils.get(member.guild.channels, name='general')
@@ -2488,12 +2706,10 @@ async def on_guild_join(guild):
     """Khi bot được thêm vào server mới"""
     print(f"Bot đã được thêm vào server: {guild.name} (ID: {guild.id})")
     
-    # Tìm kênh để gửi tin nhắn chào
     channel = discord.utils.get(guild.channels, name='general')
     if not channel:
         channel = guild.system_channel
     if not channel:
-        # Tìm kênh text đầu tiên mà bot có thể gửi tin nhắn
         for ch in guild.text_channels:
             if ch.permissions_for(guild.me).send_messages:
                 channel = ch
@@ -2518,7 +2734,6 @@ async def on_guild_remove(guild):
     """Khi bot bị xóa khỏi server"""
     print(f"Bot đã bị xóa khỏi server: {guild.name} (ID: {guild.id})")
 
-# Thêm một số lệnh debug cho admin
 @bot.command(name='debug')
 @commands.is_owner()
 async def debug_info(ctx):
@@ -2528,8 +2743,7 @@ async def debug_info(ctx):
     embed.add_field(name="Users", value=len(bot.users), inline=True)
     embed.add_field(name="Commands", value=len(bot.commands), inline=True)
     embed.add_field(name="Latency", value=f"{round(bot.latency * 1000)}ms", inline=True)
-    
-    # Memory usage (nếu có thể)
+
     try:
         process = psutil.Process()
         memory_mb = process.memory_info().rss / 1024 / 1024
@@ -2543,9 +2757,51 @@ async def debug_info(ctx):
 @commands.is_owner()
 async def reload_bot(ctx):
     """Reload bot (chỉ owner)"""
-    await ctx.send("🔄 Đang reload bot...")
-    # Ở đây bạn có thể thêm logic reload nếu cần
-    await ctx.send("✅ Reload hoàn thành!")
+    embed = discord.Embed(
+        title="🔄 Reload Bot",
+        description="Đang reload các extension...",
+        color=0x3498db,
+        timestamp=datetime.datetime.now()
+    )
+    embed.set_footer(text=f"Yêu cầu bởi {ctx.author.name}")
+    await ctx.send(embed=embed)
+
+    try:
+        extensions = list(bot.extensions.keys())
+        if not extensions:
+            embed = discord.Embed(
+                title="❌ Lỗi Reload",
+                description="Không có extension nào được load!",
+                color=0xe74c3c,
+                timestamp=datetime.datetime.now()
+            )
+            await ctx.send(embed=embed)
+            return
+        
+        for ext in extensions:
+            await bot.reload_extension(ext)
+
+        embed = discord.Embed(
+            title="✅ Reload Hoàn Thành",
+            description=f"Đã reload {len(extensions)} extension thành công!",
+            color=0x2ecc71,
+            timestamp=datetime.datetime.now()
+        )
+        embed.add_field(name="Extension Đã Reload", value="\n".join(extensions), inline=False)
+        embed.set_footer(text=f"Yêu cầu bởi {ctx.author.name}")
+        await ctx.send(embed=embed)
+        if 'log_event' in globals():
+            await log_event(ctx.guild, f"Bot reload bởi {ctx.author} ({ctx.author.id}).")
+    
+    except Exception as e:
+        embed = discord.Embed(
+            title="❌ Lỗi Reload",
+            description=f"Lỗi khi reload bot: {str(e)}",
+            color=0xe74c3c,
+            timestamp=datetime.datetime.now()
+        )
+        embed.set_footer(text=f"Yêu cầu bởi {ctx.author.name}")
+        await ctx.send(embed=embed)
 
 @bot.command(name='shutdown')
 @commands.is_owner()
@@ -2554,14 +2810,14 @@ async def shutdown_bot(ctx):
     await ctx.send("🔌 Đang tắt bot...")
     await bot.close()
 
-# Thêm cooldown cho một số lệnh để tránh spam
+
 @bot.command(name='spam_test')
-@commands.cooldown(1, 30, commands.BucketType.user)  # 1 lần mỗi 30 giây
+@commands.cooldown(1, 1, commands.BucketType.user)  
 async def spam_test(ctx):
     """Lệnh test cooldown"""
     await ctx.send("✅ Lệnh test cooldown hoạt động!")
 
-# Thêm một số utility functions
+
 def format_time(seconds):
     """Format seconds thành readable time"""
     if seconds < 60:
@@ -2577,20 +2833,18 @@ def is_url(string):
     """Kiểm tra xem string có phải URL không"""
     import re
     url_pattern = re.compile(
-        r'^https?://'  # http:// or https://
-        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|'  # domain...
-        r'localhost|'  # localhost...
-        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # ...or ip
-        r'(?::\d+)?'  # optional port
+        r'^https?://'  
+        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|' 
+        r'localhost|'  
+        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  
+        r'(?::\d+)?' 
         r'(?:/?|[/?]\S+)$', re.IGNORECASE)
     return url_pattern.match(string) is not None
 
-# Bot startup
+
 if __name__ == "__main__":
-    # Store start time for uptime command
+
     bot.start_time = datetime.datetime.now()
-    
-    # Load bot token from environment variable
     bot_token = os.getenv("DISCORD_BOT_TOKEN")
     if not bot_token:
         print("❌ Lỗi: Không tìm thấy token bot trong biến môi trường DISCORD_BOT_TOKEN")
